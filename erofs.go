@@ -167,8 +167,6 @@ func (sb *SuperBlock) NidToOffset(nid uint64) uint64 {
 }
 
 // InodeCompact represents 32-byte reduced form of on-disk inode.
-//
-// +marshal
 type InodeCompact struct {
 	Format       uint16
 	XattrCount   uint16
@@ -188,8 +186,6 @@ func (i *InodeCompact) SizeBytes() int {
 }
 
 // InodeExtended represents 64-byte complete form of on-disk inode.
-//
-// +marshal
 type InodeExtended struct {
 	Format       uint16
 	XattrCount   uint16
