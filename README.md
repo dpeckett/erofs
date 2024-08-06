@@ -7,7 +7,13 @@ based on.
 
 ## Limitations
 
-No support atm for compression or deduplication. Happy to accept PRs for this.
+No support for:
+
+* Compression
+* Chunked files
+* Extended attributes (xattr)
+
+Happy to accept PRs.
 
 ## Usage
 

@@ -37,6 +37,7 @@ package:
     golang-any=2:1.22~3~bpo12+1 golang-go=2:1.22~3~bpo12+1 golang-src=2:1.22~3~bpo12+1
   # Build Dependencies
   RUN apt install -y \
+    golang-github-rogpeppe-go-internal-dev \
     golang-github-stretchr-testify-dev
   RUN mkdir -p /workspace/golang-github-dpeckett-erofs
   WORKDIR /workspace/golang-github-dpeckett-erofs

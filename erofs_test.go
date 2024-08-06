@@ -15,9 +15,11 @@ import (
 	"io"
 	"io/fs"
 	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/dpeckett/erofs"
+	"github.com/rogpeppe/go-internal/dirhash"
 
 	"github.com/stretchr/testify/require"
 )
@@ -96,23 +98,23 @@ func TestEROFS(t *testing.T) {
 
 		require.Equal(t, "group", entries[0].Name())
 		require.False(t, entries[0].IsDir())
-		require.Equal(t, 0, int(entries[0].Type()))
+		require.Equal(t, 0o644, int(entries[0].Type()))
 
 		require.Equal(t, "os-release", entries[1].Name())
 		require.False(t, entries[1].IsDir())
-		require.Equal(t, 0, int(entries[1].Type()))
+		require.Equal(t, 0o644, int(entries[1].Type()))
 
 		require.Equal(t, "passwd", entries[2].Name())
 		require.False(t, entries[2].IsDir())
-		require.Equal(t, 0, int(entries[2].Type()))
+		require.Equal(t, 0o644, int(entries[2].Type()))
 
 		require.Equal(t, "rc", entries[3].Name())
 		require.True(t, entries[3].IsDir())
-		require.Equal(t, fs.ModeDir, entries[3].Type())
+		require.True(t, entries[3].Type()&fs.ModeDir > 0)
 
 		require.Equal(t, "resolv.conf", entries[4].Name())
 		require.False(t, entries[4].IsDir())
-		require.Equal(t, 0, int(entries[4].Type()))
+		require.Equal(t, 0o644, int(entries[4].Type()))
 	})
 
 	t.Run("Stat", func(t *testing.T) {
@@ -212,4 +214,40 @@ func TestEROFS(t *testing.T) {
 			"etc/group",
 		}, paths[:5])
 	})
+}
+
+func TestEROFSDirHash(t *testing.T) {
+	f, err := os.Open("testdata/toybox.img")
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		require.NoError(t, f.Close())
+	})
+
+	image, err := erofs.OpenImage(f)
+	require.NoError(t, err)
+
+	fsys, err := erofs.NewFilesystem(image)
+	require.NoError(t, err)
+
+	var files []string
+	err = fs.WalkDir(fsys, ".", func(file string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+
+		if d.IsDir() || d.Type()&fs.ModeSymlink != 0 {
+			return nil
+		}
+
+		files = append(files, filepath.ToSlash(file))
+		return nil
+	})
+	require.NoError(t, err)
+
+	h, err := dirhash.Hash1(files, func(name string) (io.ReadCloser, error) {
+		return fsys.Open(name)
+	})
+	require.NoError(t, err)
+
+	require.Equal(t, "h1:adgxkqVceeKMyJdMZMvcUIbg94TthnXUmOeufCPuzQI=", h)
 }

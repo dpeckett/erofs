@@ -230,10 +230,7 @@ func (de *dirEntry) IsDir() bool {
 }
 
 func (de *dirEntry) Type() fs.FileMode {
-	if de.IsDir() {
-		return fs.ModeDir
-	}
-	return 0
+	return de.inode.Mode()
 }
 
 func (de *dirEntry) Info() (fs.FileInfo, error) {
@@ -277,7 +274,7 @@ func (fi *fileInfo) Size() int64 {
 }
 
 func (fi *fileInfo) Mode() fs.FileMode {
-	return fs.FileMode(fi.inode.Mode())
+	return fi.inode.Mode()
 }
 
 func (fi *fileInfo) ModTime() time.Time {

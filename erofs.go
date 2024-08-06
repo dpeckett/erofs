@@ -38,6 +38,7 @@ import (
 	"fmt"
 	"hash/crc32"
 	"io"
+	"io/fs"
 	"syscall"
 )
 
@@ -578,8 +579,29 @@ func (ino *Inode) MtimeNsec() uint32 {
 }
 
 // Mode returns the file type and permissions.
-func (ino *Inode) Mode() uint16 {
-	return ino.mode
+func (ino *Inode) Mode() fs.FileMode {
+	mode := fs.FileMode(ino.mode) & fs.ModePerm
+
+	if ino.IsDir() {
+		mode |= fs.ModeDir
+	}
+	if ino.IsCharDev() {
+		mode |= fs.ModeCharDevice
+	}
+	if ino.IsBlockDev() {
+		mode |= fs.ModeDevice
+	}
+	if ino.IsFIFO() {
+		mode |= fs.ModeNamedPipe
+	}
+	if ino.IsSocket() {
+		mode |= fs.ModeSocket
+	}
+	if ino.IsSymlink() {
+		mode |= fs.ModeSymlink
+	}
+
+	return mode
 }
 
 // UID returns the user ID of the owner.
