@@ -5,6 +5,10 @@ An EROFS (Enhanced Read-Only File System) implementation for Go.
 Thanks to the gVisor project for the underlying code that this project is
 based on.
 
+## Limitations
+
+No support atm for compression or deduplication. Happy to accept PRs for this.
+
 ## Usage
 
 ```go
