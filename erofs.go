@@ -34,10 +34,10 @@ package erofs
 import (
 	"bytes"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"hash/crc32"
 	"io"
-	"log/slog"
 	"syscall"
 )
 
@@ -106,39 +106,31 @@ const (
 	FeatureIncompatSupported = 0x0
 )
 
-// Sizes of on-disk structures in bytes.
-const (
-	SuperBlockSize    = 128
-	InodeCompactSize  = 32
-	InodeExtendedSize = 64
-	DirentSize        = 12
-)
-
 // SuperBlock represents on-disk superblock.
 type SuperBlock struct {
-	Magic           uint32
-	Checksum        uint32
-	FeatureCompat   uint32
-	BlockSizeBits   uint8
-	ExtSlots        uint8
-	RootNid         uint16
-	Inodes          uint64
-	BuildTime       uint64
-	BuildTimeNsec   uint32
-	Blocks          uint32
-	MetaBlockAddr   uint32
-	XattrBlockAddr  uint32
-	UUID            [16]uint8
-	VolumeName      [16]uint8
-	FeatureIncompat uint32
-	Union1          uint16
-	ExtraDevices    uint16
-	DevTableSlotOff uint16
-	Reserved        [38]uint8
+	Magic           uint32    // Filesystem magic number
+	Checksum        uint32    // CRC32C checksum of the superblock
+	FeatureCompat   uint32    // Compatible feature flags
+	BlockSizeBits   uint8     // Filesystem block size in bit shift
+	ExtSlots        uint8     // Superblock extension slots
+	RootNid         uint16    // Root directory inode number
+	Inodes          uint64    // Total valid inodes
+	BuildTime       uint64    // Build time of the filesystem
+	BuildTimeNsec   uint32    // Nanoseconds part of build time
+	Blocks          uint32    // Total number of blocks
+	MetaBlockAddr   uint32    // Start block address of metadata area
+	XattrBlockAddr  uint32    // Start block address of shared xattr area
+	UUID            [16]uint8 // UUID for volume
+	VolumeName      [16]uint8 // Volume name
+	FeatureIncompat uint32    // Incompatible feature flags
+	Union1          uint16    // Union for additional features
+	ExtraDevices    uint16    // Number of extra devices
+	DevTableSlotOff uint16    // Device table slot offset
+	Reserved        [38]uint8 // Reserved for future use
 }
 
-func (sb *SuperBlock) SizeBytes() int {
-	return SuperBlockSize
+func (sb *SuperBlock) SizeBytes() int64 {
+	return 128
 }
 
 // BlockSize returns the block size.
@@ -147,74 +139,70 @@ func (sb *SuperBlock) BlockSize() uint32 {
 }
 
 // BlockAddrToOffset converts block addr to the offset in image file.
-func (sb *SuperBlock) BlockAddrToOffset(addr uint32) uint64 {
-	return uint64(addr) << sb.BlockSizeBits
+func (sb *SuperBlock) BlockAddrToOffset(addr uint32) int64 {
+	return int64(addr) << sb.BlockSizeBits
 }
 
 // MetaOffset returns the offset of metadata area in image file.
-func (sb *SuperBlock) MetaOffset() uint64 {
+func (sb *SuperBlock) MetaOffset() int64 {
 	return sb.BlockAddrToOffset(sb.MetaBlockAddr)
 }
 
 // NidToOffset converts inode number to the offset in image file.
-func (sb *SuperBlock) NidToOffset(nid uint64) uint64 {
-	return sb.MetaOffset() + (nid << InodeSlotBits)
+func (sb *SuperBlock) NidToOffset(nid uint64) int64 {
+	return int64(sb.MetaOffset()) + (int64(nid) << InodeSlotBits)
 }
 
 // InodeCompact represents 32-byte reduced form of on-disk inode.
 type InodeCompact struct {
-	Format       uint16
-	XattrCount   uint16
-	Mode         uint16
-	Nlink        uint16
-	Size         uint32
-	Reserved     uint32
-	RawBlockAddr uint32
-	Ino          uint32
-	UID          uint16
-	GID          uint16
-	Reserved2    uint32
+	Format       uint16 // Inode format hints
+	XattrCount   uint16 // Xattr entry count
+	Mode         uint16 // File mode
+	Nlink        uint16 // Number of hard links
+	Size         uint32 // File size in bytes
+	Reserved     uint32 // Reserved for future use
+	RawBlockAddr uint32 // Raw block address
+	Ino          uint32 // Inode number
+	UID          uint16 // User ID of owner
+	GID          uint16 // Group ID of owner
+	Reserved2    uint32 // Reserved for future use
 }
 
-func (i *InodeCompact) SizeBytes() int {
-	return InodeCompactSize
+func (ino *InodeCompact) SizeBytes() int64 {
+	return 32
 }
 
 // InodeExtended represents 64-byte complete form of on-disk inode.
 type InodeExtended struct {
-	Format       uint16
-	XattrCount   uint16
-	Mode         uint16
-	Reserved     uint16
-	Size         uint64
-	RawBlockAddr uint32
-	Ino          uint32
-	UID          uint32
-	GID          uint32
-	Mtime        uint64
-	MtimeNsec    uint32
-	Nlink        uint32
-	Reserved2    [16]uint8
+	Format       uint16    // Inode format hints
+	XattrCount   uint16    // Xattr entry count
+	Mode         uint16    // File mode
+	Reserved     uint16    // Reserved for future use
+	Size         uint64    // File size in bytes
+	RawBlockAddr uint32    // Raw block address
+	Ino          uint32    // Inode number
+	UID          uint32    // User ID of owner
+	GID          uint32    // Group ID of owner
+	Mtime        uint64    // Last modification time
+	MtimeNsec    uint32    // Nanoseconds part of Mtime
+	Nlink        uint32    // Number of hard links
+	Reserved2    [16]uint8 // Reserved for future use
 }
 
-func (i *InodeExtended) SizeBytes() int {
-	return InodeExtendedSize
+func (ino *InodeExtended) SizeBytes() int64 {
+	return 64
 }
 
 // Dirent represents on-disk directory entry.
 type Dirent struct {
-	NidLow   uint32
-	NidHigh  uint32
-	NameOff  uint16
-	FileType uint8
-	Reserved uint8
+	Nid      uint64 // Inode number
+	NameOff  uint16 // Offset of file name
+	FileType uint8  // File type
+	Reserved uint8  // Reserved for future use
 }
 
-// Nid returns the inode number of the inode referenced by this dirent.
-func (d *Dirent) Nid() uint64 {
-	// EROFS on-disk structures are always in little endian.
-	// TODO: This implementation does not support big endian yet.
-	return (uint64(d.NidHigh) << 32) | uint64(d.NidLow)
+func (d *Dirent) SizeBytes() int64 {
+	return 12
 }
 
 // Image represents an open EROFS image.
@@ -258,8 +246,7 @@ func (i *Image) RootNid() uint64 {
 
 // initSuperBlock initializes the superblock of this image.
 func (i *Image) initSuperBlock() error {
-	if err := binary.Read(io.NewSectionReader(i.src, int64(SuperBlockOffset), int64(i.sb.SizeBytes())),
-		binary.LittleEndian, &i.sb); err != nil {
+	if err := i.unmarshalFrom(SuperBlockOffset, &i.sb); err != nil {
 		return err
 	}
 
@@ -295,9 +282,9 @@ func (i *Image) verifyChecksum() error {
 	table := crc32.MakeTable(crc32.Castagnoli)
 	checksum := crc32.Checksum(marshalledSb.Bytes(), table)
 
-	off := SuperBlockOffset + uint64(i.sb.SizeBytes())
-	if buf, err := i.BytesAt(off, uint64(i.BlockSize())-off); err != nil {
-		return fmt.Errorf("image size is too small")
+	off := SuperBlockOffset + int64(i.sb.SizeBytes())
+	if buf, err := i.bytesAt(off, int64(i.BlockSize())-off); err != nil {
+		return errors.New("image size is too small")
 	} else {
 		checksum = ^crc32.Update(checksum, table, buf)
 	}
@@ -308,44 +295,13 @@ func (i *Image) verifyChecksum() error {
 	return nil
 }
 
-// checkRange checks whether the range [off, off+n) is valid.
-func (i *Image) checkRange(off, n uint64) bool {
-	size := uint64(i.sb.Blocks) * uint64(i.BlockSize())
-	end := off + n
-	return off < size && off <= end && end <= size
-}
-
-// BytesAt returns the bytes at [off, off+n) of the image.
-func (i *Image) BytesAt(off, n uint64) ([]byte, error) {
-	if !i.checkRange(off, n) {
-		slog.Warn("Invalid byte range",
-			slog.Uint64("offset", off), slog.Uint64("length", n))
-		return nil, syscall.EFAULT
-	}
-	buf := make([]byte, n)
-	if _, err := i.src.ReadAt(buf, int64(off)); err != nil {
-		return nil, err
-	}
-	return buf, nil
-}
-
-// checkInodeAlignment checks whether off matches inode's alignment requirement.
-func checkInodeAlignment(off uint64) bool {
-	// Each valid inode should be aligned with an inode slot, which is
-	// a fixed value (32 bytes).
-	return off&((1<<InodeSlotBits)-1) == 0
-}
-
 // inodeFormatAt returns the format of the inode at offset off within the
 // image.
-func (i *Image) inodeFormatAt(off uint64) (uint16, error) {
+func (i *Image) inodeFormatAt(off int64) (uint16, error) {
 	if !checkInodeAlignment(off) {
 		return 0, syscall.EFAULT
 	}
-	if !i.checkRange(off, 2) {
-		return 0, syscall.EFAULT
-	}
-	buf, err := i.BytesAt(off, 2)
+	buf, err := i.bytesAt(off, 2)
 	if err != nil {
 		return 0, err
 	}
@@ -354,54 +310,44 @@ func (i *Image) inodeFormatAt(off uint64) (uint16, error) {
 
 // inodeCompactAt returns a pointer to the compact inode at offset off within
 // the image.
-func (i *Image) inodeCompactAt(off uint64) (*InodeCompact, error) {
+func (i *Image) inodeCompactAt(off int64) (*InodeCompact, error) {
 	if !checkInodeAlignment(off) {
 		return nil, syscall.EFAULT
 	}
-	if !i.checkRange(off, InodeCompactSize) {
-		return nil, syscall.EFAULT
-	}
 	var inode InodeCompact
-	if err := binary.Read(io.NewSectionReader(i.src, int64(off), InodeCompactSize),
-		binary.LittleEndian, &inode); err != nil {
+	if err := i.unmarshalFrom(int64(off), &inode); err != nil {
 		return nil, err
 	}
+
 	return &inode, nil
 }
 
 // inodeExtendedAt returns a pointer to the extended inode at offset off within
 // the image.
-func (i *Image) inodeExtendedAt(off uint64) (*InodeExtended, error) {
+func (i *Image) inodeExtendedAt(off int64) (*InodeExtended, error) {
 	if !checkInodeAlignment(off) {
-		return nil, syscall.EFAULT
-	}
-	if !i.checkRange(off, InodeExtendedSize) {
 		return nil, syscall.EFAULT
 	}
 
 	var inode InodeExtended
-	if err := binary.Read(io.NewSectionReader(i.src, int64(off), InodeExtendedSize),
-		binary.LittleEndian, &inode); err != nil {
+	if err := i.unmarshalFrom(int64(off), &inode); err != nil {
 		return nil, err
 	}
 	return &inode, nil
 }
 
 // direntAt returns a pointer to the dirent at offset off within the image.
-func (i *Image) direntAt(off uint64) (*Dirent, error) {
+func (i *Image) direntAt(off int64) (*Dirent, error) {
 	// Each valid dirent should be aligned to 4 bytes.
 	if off&3 != 0 {
 		return nil, syscall.EFAULT
 	}
-	if !i.checkRange(off, DirentSize) {
-		return nil, syscall.EFAULT
-	}
 
 	var dirent Dirent
-	if err := binary.Read(io.NewSectionReader(i.src, int64(off), DirentSize),
-		binary.LittleEndian, &dirent); err != nil {
+	if err := i.unmarshalFrom(off, &dirent); err != nil {
 		return nil, err
 	}
+
 	return &dirent, nil
 }
 
@@ -421,7 +367,7 @@ func (i *Image) Inode(nid uint64) (Inode, error) {
 
 	var (
 		rawBlockAddr uint32
-		inodeSize    int
+		inodeSize    int64
 	)
 
 	switch layout := inode.Layout(); layout {
@@ -432,8 +378,7 @@ func (i *Image) Inode(nid uint64) (Inode, error) {
 		}
 
 		if ino.XattrCount != 0 {
-			slog.Warn("Unsupported xattr at inode", slog.Uint64("nid", nid))
-			return Inode{}, syscall.ENOTSUP
+			return Inode{}, fmt.Errorf("unsupported xattr at inode %d: %w", nid, syscall.ENOTSUP)
 		}
 
 		rawBlockAddr = ino.RawBlockAddr
@@ -454,8 +399,7 @@ func (i *Image) Inode(nid uint64) (Inode, error) {
 		}
 
 		if ino.XattrCount != 0 {
-			slog.Warn("Unsupported xattr at inode", slog.Uint64("nid", nid))
-			return Inode{}, syscall.ENOTSUP
+			return Inode{}, fmt.Errorf("unsupported xattr at inode %d: %w", nid, syscall.ENOTSUP)
 		}
 
 		rawBlockAddr = ino.RawBlockAddr
@@ -470,37 +414,60 @@ func (i *Image) Inode(nid uint64) (Inode, error) {
 		inode.mtimeNsec = ino.MtimeNsec
 
 	default:
-		slog.Warn("Unsupported layout", slog.Int("layout", int(layout)),
-			slog.Uint64("nid", nid))
-		return Inode{}, syscall.ENOTSUP
+		return Inode{}, fmt.Errorf("unsupported layout at inode %d: %w", nid, syscall.ENOTSUP)
 	}
 
-	blockSize := uint64(i.BlockSize())
-	inode.blocks = (inode.size + (blockSize - 1)) / blockSize
+	blockSize := int64(i.BlockSize())
+	inode.blocks = (int64(inode.size) + (blockSize - 1)) / blockSize
 
 	switch dataLayout := inode.DataLayout(); dataLayout {
 	case InodeDataLayoutFlatInline:
 		// Check that whether the file data in the last block fits into
 		// the remaining room of the metadata block.
-		tailSize := inode.size & (blockSize - 1)
-		if tailSize == 0 || tailSize > blockSize-uint64(inodeSize) {
-			slog.Warn("Inline data not found or cross block boundary at inode",
-				slog.Uint64("nid", nid))
-			return Inode{}, syscall.EUCLEAN
+		tailSize := int64(inode.size) & (blockSize - 1)
+		if tailSize == 0 || tailSize > blockSize-inodeSize {
+			return Inode{}, fmt.Errorf("inline data not found or cross block boundary at inode %d: %w", nid, syscall.EUCLEAN)
 		}
-		inode.idataOff = off + uint64(inodeSize)
+		inode.idataOff = off + inodeSize
 		fallthrough
 
 	case InodeDataLayoutFlatPlain:
 		inode.dataOff = i.sb.BlockAddrToOffset(rawBlockAddr)
 
 	default:
-		slog.Warn("Unsupported data layout", slog.Int("data_layout", int(dataLayout)),
-			slog.Uint64("nid", nid))
-		return Inode{}, syscall.ENOTSUP
+		return Inode{}, fmt.Errorf("unsupported data layout at inode %d: %w", nid, syscall.ENOTSUP)
 	}
 
 	return inode, nil
+}
+
+// bytesAt returns the bytes at [off, off+n) of the image.
+func (i *Image) bytesAt(off, n int64) ([]byte, error) {
+	buf := make([]byte, n)
+	if _, err := i.src.ReadAt(buf, off); err != nil {
+		return nil, err
+	}
+	return buf, nil
+}
+
+type marshallable interface {
+	SizeBytes() int64
+}
+
+func (i *Image) unmarshalFrom(off int64, data marshallable) error {
+	if err := binary.Read(io.NewSectionReader(i.src, off, int64(data.SizeBytes())),
+		binary.LittleEndian, data); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// checkInodeAlignment checks whether off matches inode's alignment requirement.
+func checkInodeAlignment(off int64) bool {
+	// Each valid inode should be aligned with an inode slot, which is
+	// a fixed value (32 bytes).
+	return off&((1<<InodeSlotBits)-1) == 0
 }
 
 // Inode represents an inode object.
@@ -510,16 +477,16 @@ type Inode struct {
 	image *Image
 
 	// dataOff points to the data of this inode in the data blocks.
-	dataOff uint64
+	dataOff int64
 
 	// idataOff points to the tail packing inline data of this inode
 	// if it's not zero in the metadata block.
-	idataOff uint64
+	idataOff int64
 
 	// blocks indicates the count of blocks that store the data associated
 	// with this inode. It will count in the metadata block that includes
 	// the inline data as well.
-	blocks uint64
+	blocks int64
 
 	// format is the format of this inode.
 	format uint16
@@ -541,140 +508,132 @@ func bitRange(value, bit, bits uint16) uint16 {
 }
 
 // Layout returns the inode layout.
-func (i *Inode) Layout() uint16 {
-	return bitRange(i.format, InodeLayoutBit, InodeLayoutBits)
+func (ino *Inode) Layout() uint16 {
+	return bitRange(ino.format, InodeLayoutBit, InodeLayoutBits)
 }
 
 // DataLayout returns the inode data layout.
-func (i *Inode) DataLayout() uint16 {
-	return bitRange(i.format, InodeDataLayoutBit, InodeDataLayoutBits)
+func (ino *Inode) DataLayout() uint16 {
+	return bitRange(ino.format, InodeDataLayoutBit, InodeDataLayoutBits)
 }
 
 // IsRegular indicates whether i represents a regular file.
-func (i *Inode) IsRegular() bool {
-	return i.mode&S_IFMT == S_IFREG
+func (ino *Inode) IsRegular() bool {
+	return ino.mode&S_IFMT == S_IFREG
 }
 
 // IsDir indicates whether i represents a directory.
-func (i *Inode) IsDir() bool {
-	return i.mode&S_IFMT == S_IFDIR
+func (ino *Inode) IsDir() bool {
+	return ino.mode&S_IFMT == S_IFDIR
 }
 
 // IsCharDev indicates whether i represents a character device.
-func (i *Inode) IsCharDev() bool {
-	return i.mode&S_IFMT == S_IFCHR
+func (ino *Inode) IsCharDev() bool {
+	return ino.mode&S_IFMT == S_IFCHR
 }
 
 // IsBlockDev indicates whether i represents a block device.
-func (i *Inode) IsBlockDev() bool {
-	return i.mode&S_IFMT == S_IFBLK
+func (ino *Inode) IsBlockDev() bool {
+	return ino.mode&S_IFMT == S_IFBLK
 }
 
 // IsFIFO indicates whether i represents a named pipe.
-func (i *Inode) IsFIFO() bool {
-	return i.mode&S_IFMT == S_IFIFO
+func (ino *Inode) IsFIFO() bool {
+	return ino.mode&S_IFMT == S_IFIFO
 }
 
 // IsSocket indicates whether i represents a socket.
-func (i *Inode) IsSocket() bool {
-	return i.mode&S_IFMT == S_IFSOCK
+func (ino *Inode) IsSocket() bool {
+	return ino.mode&S_IFMT == S_IFSOCK
 }
 
 // IsSymlink indicates whether i represents a symbolic link.
-func (i *Inode) IsSymlink() bool {
-	return i.mode&S_IFMT == S_IFLNK
+func (ino *Inode) IsSymlink() bool {
+	return ino.mode&S_IFMT == S_IFLNK
 }
 
 // Nid returns the inode number.
-func (i *Inode) Nid() uint64 {
-	return i.nid
+func (ino *Inode) Nid() uint64 {
+	return ino.nid
 }
 
 // Size returns the data size.
-func (i *Inode) Size() uint64 {
-	return i.size
+func (ino *Inode) Size() uint64 {
+	return ino.size
 }
 
 // Nlink returns the number of hard links.
-func (i *Inode) Nlink() uint32 {
-	return i.nlink
+func (ino *Inode) Nlink() uint32 {
+	return ino.nlink
 }
 
 // Mtime returns the time of last modification.
-func (i *Inode) Mtime() uint64 {
-	return i.mtime
+func (ino *Inode) Mtime() uint64 {
+	return ino.mtime
 }
 
 // MtimeNsec returns the nano second part of Mtime.
-func (i *Inode) MtimeNsec() uint32 {
-	return i.mtimeNsec
+func (ino *Inode) MtimeNsec() uint32 {
+	return ino.mtimeNsec
 }
 
 // Mode returns the file type and permissions.
-func (i *Inode) Mode() uint16 {
-	return i.mode
+func (ino *Inode) Mode() uint16 {
+	return ino.mode
 }
 
 // UID returns the user ID of the owner.
-func (i *Inode) UID() uint32 {
-	return i.uid
+func (ino *Inode) UID() uint32 {
+	return ino.uid
 }
 
 // GID returns the group ID of the owner.
-func (i *Inode) GID() uint32 {
-	return i.gid
+func (ino *Inode) GID() uint32 {
+	return ino.gid
 }
 
 // Data returns the read-only file data of this inode.
-func (i *Inode) Data() (io.Reader, error) {
-	switch dataLayout := i.DataLayout(); dataLayout {
+func (ino *Inode) Data() (io.Reader, error) {
+	switch dataLayout := ino.DataLayout(); dataLayout {
 	case InodeDataLayoutFlatPlain:
-		return io.NewSectionReader(i.image.src, int64(i.dataOff), int64(i.size)), nil
+		return io.NewSectionReader(ino.image.src, int64(ino.dataOff), int64(ino.size)), nil
 
 	case InodeDataLayoutFlatInline:
 		readers := make([]io.Reader, 0, 2)
-		idataSize := i.size & (uint64(i.image.BlockSize()) - 1)
-		if i.size > idataSize {
-			readers = append(readers, io.NewSectionReader(i.image.src, int64(i.dataOff), int64(i.size-idataSize)))
+		idataSize := ino.size & (uint64(ino.image.BlockSize()) - 1)
+		if ino.size > idataSize {
+			readers = append(readers, io.NewSectionReader(ino.image.src, int64(ino.dataOff), int64(ino.size-idataSize)))
 		}
-		readers = append(readers, io.NewSectionReader(i.image.src, int64(i.idataOff), int64(idataSize)))
+		readers = append(readers, io.NewSectionReader(ino.image.src, int64(ino.idataOff), int64(idataSize)))
 		return io.MultiReader(readers...), nil
 
 	default:
-		slog.Warn("Unsupported data layout",
-			slog.Int("data_layout", int(dataLayout)), slog.Uint64("nid", i.Nid()))
-		return nil, syscall.ENOTSUP
+		return nil, fmt.Errorf("unsupported data layout: %w", syscall.ENOTSUP)
 	}
 }
 
 // blockData represents the information of the data in a block.
 type blockData struct {
 	// base indicates the data offset within the image.
-	base uint64
+	base int64
 	// size indicates the data size.
 	size uint32
-}
-
-// valid indicates whether this is valid information about the data in a block.
-func (b *blockData) valid() bool {
-	// The data offset within the image will never be zero.
-	return b.base > 0
 }
 
 // getBlockDataInfo returns the information of the data in the block identified by
 // blockIdx of this inode.
 //
 // Precondition: blockIdx < i.blocks.
-func (i *Inode) getBlockDataInfo(blockIdx uint64) blockData {
-	blockSize := i.image.BlockSize()
-	lastBlock := blockIdx == i.blocks-1
-	base := i.idataOff
+func (ino *Inode) getBlockDataInfo(blockIdx uint64) blockData {
+	blockSize := ino.image.BlockSize()
+	lastBlock := int64(blockIdx) == ino.blocks-1
+	base := ino.idataOff
 	if !lastBlock || base == 0 {
-		base = i.dataOff + blockIdx*uint64(blockSize)
+		base = ino.dataOff + int64(blockIdx)*int64(blockSize)
 	}
 	size := blockSize
 	if lastBlock {
-		if tailSize := uint32(i.size) & (blockSize - 1); tailSize != 0 {
+		if tailSize := uint32(ino.size) & (blockSize - 1); tailSize != 0 {
 			size = tailSize
 		}
 	}
@@ -708,12 +667,12 @@ func (i *Inode) getBlockDataInfo(blockIdx uint64) blockData {
 // [ (metadata block) inode | optional fields | dirent M+2 | dirent M+3 | name M+2 | name M+3 | optional padding ]
 //
 // Refer: https://docs.kernel.org/filesystems/erofs.html#directories
-func (i *Inode) getDirentName(d *Dirent, direntOff uint64, block blockData, lastDirent bool) ([]byte, error) {
+func (ino *Inode) getDirentName(d *Dirent, direntOff int64, block blockData, lastDirent bool) ([]byte, error) {
 	var nameLen uint32
 	if lastDirent {
 		nameLen = block.size - uint32(d.NameOff)
 	} else {
-		next, err := i.image.direntAt(direntOff + DirentSize)
+		next, err := ino.image.direntAt(direntOff + d.SizeBytes())
 		if err != nil {
 			return nil, err
 		}
@@ -721,10 +680,9 @@ func (i *Inode) getDirentName(d *Dirent, direntOff uint64, block blockData, last
 		nameLen = uint32(next.NameOff - d.NameOff)
 	}
 	if uint32(d.NameOff)+nameLen > block.size || nameLen > MaxNameLen || nameLen == 0 {
-		slog.Warn("Corrupted dirent", slog.Uint64("nid", i.Nid()))
-		return nil, syscall.EUCLEAN
+		return nil, fmt.Errorf("corrupted dirent: %w", syscall.EUCLEAN)
 	}
-	name, err := i.image.BytesAt(block.base+uint64(d.NameOff), uint64(nameLen))
+	name, err := ino.image.bytesAt(int64(block.base)+int64(d.NameOff), int64(nameLen))
 	if err != nil {
 		return nil, err
 	}
@@ -732,8 +690,7 @@ func (i *Inode) getDirentName(d *Dirent, direntOff uint64, block blockData, last
 		// Optional padding may exist at the end of a block.
 		n := bytes.IndexByte(name, 0)
 		if n == 0 {
-			slog.Warn("Corrupted dirent", slog.Uint64("nid", i.Nid()))
-			return nil, syscall.EUCLEAN
+			return nil, fmt.Errorf("corrupted dirent: %w", syscall.EUCLEAN)
 		}
 		if n != -1 {
 			name = name[:n]
@@ -743,22 +700,20 @@ func (i *Inode) getDirentName(d *Dirent, direntOff uint64, block blockData, last
 }
 
 // getDirent0 returns a pointer to the first dirent in the given block of this inode.
-func (i *Inode) getDirent0(block blockData) (*Dirent, error) {
-	d0, err := i.image.direntAt(block.base)
+func (ino *Inode) getDirent0(block blockData) (*Dirent, error) {
+	d0, err := ino.image.direntAt(int64(block.base))
 	if err != nil {
 		return nil, err
 	}
-	if d0.NameOff < DirentSize || uint32(d0.NameOff) >= block.size {
-		slog.Warn("Invalid nameOff0", slog.Int("nameoff0", int(d0.NameOff)),
-			slog.Uint64("nid", i.Nid()))
-		return nil, syscall.EUCLEAN
+	if d0.NameOff < uint16(d0.SizeBytes()) || uint32(d0.NameOff) >= block.size {
+		return nil, fmt.Errorf("invalid nameOff0 at inode %d: %w", ino.Nid(), syscall.EUCLEAN)
 	}
 	return d0, nil
 }
 
 // Lookup looks up a child by the name. The child inode number will be returned on success.
-func (i *Inode) Lookup(name string) (uint64, error) {
-	if !i.IsDir() {
+func (ino *Inode) Lookup(name string) (uint64, error) {
+	if !ino.IsDir() {
 		return 0, syscall.ENOTDIR
 	}
 
@@ -770,29 +725,30 @@ func (i *Inode) Lookup(name string) (uint64, error) {
 	// order. The lookup is done by directly performing binary search on the
 	// disk data similar to what Linux does in fs/erofs/namei.c:erofs_namei().
 	var (
+		direntSize       = (&Dirent{}).SizeBytes()
 		targetBlock      blockData
 		targetNumDirents uint16
 	)
 
 	// Find the block that may contain the target dirent first.
-	bLeft, bRight := int64(0), int64(i.blocks)-1
+	bLeft, bRight := int64(0), int64(ino.blocks)-1
 	for bLeft <= bRight {
 		// Cast to uint64 to avoid overflow.
 		mid := uint64(bLeft+bRight) >> 1
-		block := i.getBlockDataInfo(mid)
-		d0, err := i.getDirent0(block)
+		block := ino.getBlockDataInfo(mid)
+		d0, err := ino.getDirent0(block)
 		if err != nil {
 			return 0, err
 		}
-		numDirents := d0.NameOff / DirentSize
-		d0Name, err := i.getDirentName(d0, block.base, block, numDirents == 1)
+		numDirents := d0.NameOff / uint16(d0.SizeBytes())
+		d0Name, err := ino.getDirentName(d0, int64(block.base), block, numDirents == 1)
 		if err != nil {
 			return 0, err
 		}
 		switch bytes.Compare(nameBytes, d0Name) {
 		case 0:
 			// Found the target dirent.
-			return d0.Nid(), nil
+			return d0.Nid, nil
 		case 1:
 			// name > d0Name, this block may contain the target dirent.
 			targetBlock = block
@@ -804,7 +760,7 @@ func (i *Inode) Lookup(name string) (uint64, error) {
 		}
 	}
 
-	if !targetBlock.valid() {
+	if targetBlock.base == 0 {
 		// The target block was not found.
 		return 0, syscall.ENOENT
 	}
@@ -817,19 +773,19 @@ func (i *Inode) Lookup(name string) (uint64, error) {
 		// The sum will never lead to a uint16 overflow, as the maximum value of
 		// the operands is MaxUint16/DirentSize.
 		mid := (dLeft + dRight) >> 1
-		direntOff := targetBlock.base + uint64(mid)*DirentSize
-		d, err := i.image.direntAt(direntOff)
+		direntOff := int64(targetBlock.base) + int64(mid)*direntSize
+		d, err := ino.image.direntAt(direntOff)
 		if err != nil {
 			return 0, err
 		}
-		dName, err := i.getDirentName(d, direntOff, targetBlock, mid == targetNumDirents-1)
+		dName, err := ino.getDirentName(d, direntOff, targetBlock, mid == targetNumDirents-1)
 		if err != nil {
 			return 0, err
 		}
 		switch bytes.Compare(nameBytes, dName) {
 		case 0:
 			// Found the target dirent.
-			return d.Nid(), nil
+			return d.Nid, nil
 		case 1:
 			// name > dName.
 			dLeft = mid + 1
@@ -844,35 +800,35 @@ func (i *Inode) Lookup(name string) (uint64, error) {
 
 // IterDirents invokes cb on each entry in the directory represented by this inode.
 // The directory entries will be iterated in alphabetical order.
-func (i *Inode) IterDirents(cb func(name string, typ uint8, nid uint64) error) error {
-	if !i.IsDir() {
+func (ino *Inode) IterDirents(cb func(name string, typ uint8, nid uint64) error) error {
+	if !ino.IsDir() {
 		return syscall.ENOTDIR
 	}
 
 	// Iterate all the blocks which contain dirents.
-	for blockIdx := uint64(0); blockIdx < i.blocks; blockIdx++ {
-		block := i.getBlockDataInfo(blockIdx)
-		d, err := i.getDirent0(block)
+	for blockIdx := uint64(0); blockIdx < uint64(ino.blocks); blockIdx++ {
+		block := ino.getBlockDataInfo(blockIdx)
+		d, err := ino.getDirent0(block)
 		if err != nil {
 			return err
 		}
 		// Iterate all the dirents in this block.
-		numDirents := d.NameOff / DirentSize
-		direntOff := block.base
+		numDirents := d.NameOff / uint16(d.SizeBytes())
+		direntOff := int64(block.base)
 		for {
-			name, err := i.getDirentName(d, direntOff, block, numDirents == 1)
+			name, err := ino.getDirentName(d, direntOff, block, numDirents == 1)
 			if err != nil {
 				return err
 			}
-			if err := cb(string(name), d.FileType, d.Nid()); err != nil {
+			if err := cb(string(name), d.FileType, d.Nid); err != nil {
 				return err
 			}
 			if numDirents--; numDirents == 0 {
 				break
 			}
 
-			direntOff += DirentSize
-			d, err = i.image.direntAt(direntOff)
+			direntOff += d.SizeBytes()
+			d, err = ino.image.direntAt(direntOff)
 			if err != nil {
 				return err
 			}
@@ -882,28 +838,26 @@ func (i *Inode) IterDirents(cb func(name string, typ uint8, nid uint64) error) e
 }
 
 // Readlink reads the link target.
-func (i *Inode) Readlink() (string, error) {
-	if !i.IsSymlink() {
+func (ino *Inode) Readlink() (string, error) {
+	if !ino.IsSymlink() {
 		return "", syscall.EINVAL
 	}
-	off := i.dataOff
-	size := i.size
-	if i.idataOff != 0 {
+	off := int64(ino.dataOff)
+	size := int64(ino.size)
+	if ino.idataOff != 0 {
 		// Inline symlink data shouldn't cross block boundary.
-		if i.blocks > 1 {
-			slog.Warn("Inline data cross block boundary at inode",
-				slog.Uint64("nid", i.Nid()))
-			return "", syscall.EUCLEAN
+		if ino.blocks > 1 {
+			return "", fmt.Errorf("inline data cross block boundary: %w", syscall.EUCLEAN)
 		}
-		off = i.idataOff
+		off = int64(ino.idataOff)
 	} else {
 		// This matches Linux's behaviour in fs/namei.c:page_get_link() and
 		// include/linux/namei.h:nd_terminate_link().
-		if size > uint64(i.image.BlockSize())-1 {
-			size = uint64(i.image.BlockSize()) - 1
+		if size > int64(ino.image.BlockSize())-1 {
+			size = int64(ino.image.BlockSize()) - 1
 		}
 	}
-	target, err := i.image.BytesAt(off, size)
+	target, err := ino.image.bytesAt(off, size)
 	if err != nil {
 		return "", err
 	}
