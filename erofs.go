@@ -27,8 +27,6 @@
 //
 // The design principle of this package is that, it will just provide the ability
 // to access the contents in the image, and it will never cache any objects internally.
-// The whole disk image is mapped via a read-only/shared mapping, and it relies on
-// host kernel to cache the blocks/pages transparently.
 //
 // [1] https://docs.kernel.org/filesystems/erofs.html
 package erofs
@@ -43,10 +41,7 @@ import (
 	"syscall"
 )
 
-// TODO: tidy these up.
 const (
-	PageSize = 4096
-
 	// Values for mode_t.
 	S_IFMT   = 0170000
 	S_IFSOCK = 0140000
@@ -280,10 +275,6 @@ func (i *Image) initSuperBlock() error {
 		return fmt.Errorf("unsupported incompatible features detected: 0x%x", featureIncompat)
 	}
 
-	if i.BlockSize()%PageSize != 0 {
-		return fmt.Errorf("unsupported block size: 0x%x", i.BlockSize())
-	}
-
 	return nil
 }
 
@@ -346,7 +337,7 @@ func checkInodeAlignment(off uint64) bool {
 }
 
 // inodeFormatAt returns the format of the inode at offset off within the
-// memory backed by image.
+// image.
 func (i *Image) inodeFormatAt(off uint64) (uint16, error) {
 	if !checkInodeAlignment(off) {
 		return 0, syscall.EFAULT
@@ -362,7 +353,7 @@ func (i *Image) inodeFormatAt(off uint64) (uint16, error) {
 }
 
 // inodeCompactAt returns a pointer to the compact inode at offset off within
-// the memory backed by image.
+// the image.
 func (i *Image) inodeCompactAt(off uint64) (*InodeCompact, error) {
 	if !checkInodeAlignment(off) {
 		return nil, syscall.EFAULT
@@ -379,7 +370,7 @@ func (i *Image) inodeCompactAt(off uint64) (*InodeCompact, error) {
 }
 
 // inodeExtendedAt returns a pointer to the extended inode at offset off within
-// the memory backed by image.
+// the image.
 func (i *Image) inodeExtendedAt(off uint64) (*InodeExtended, error) {
 	if !checkInodeAlignment(off) {
 		return nil, syscall.EFAULT
@@ -396,8 +387,7 @@ func (i *Image) inodeExtendedAt(off uint64) (*InodeExtended, error) {
 	return &inode, nil
 }
 
-// direntAt returns a pointer to the dirent at offset off within the memory
-// backed by image.
+// direntAt returns a pointer to the dirent at offset off within the image.
 func (i *Image) direntAt(off uint64) (*Dirent, error) {
 	// Each valid dirent should be aligned to 4 bytes.
 	if off&3 != 0 {
@@ -513,7 +503,7 @@ func (i *Image) Inode(nid uint64) (Inode, error) {
 	return inode, nil
 }
 
-// Inode represents in-memory inode object.
+// Inode represents an inode object.
 type Inode struct {
 	// image is the underlying image. Inode should not perform writable
 	// operations (e.g. Close()) on the image.
@@ -642,12 +632,12 @@ func (i *Inode) Data() (io.Reader, error) {
 		return io.NewSectionReader(i.image.src, int64(i.dataOff), int64(i.size)), nil
 
 	case InodeDataLayoutFlatInline:
-		var readers []io.Reader
+		readers := make([]io.Reader, 0, 2)
 		idataSize := i.size & (uint64(i.image.BlockSize()) - 1)
 		if i.size > idataSize {
-			readers = append(readers, io.NewSectionReader(i.image.src, int64(i.idataOff), int64(i.size-idataSize)))
+			readers = append(readers, io.NewSectionReader(i.image.src, int64(i.dataOff), int64(i.size-idataSize)))
 		}
-		readers = append(readers, io.NewSectionReader(i.image.src, int64(i.dataOff), int64(idataSize)))
+		readers = append(readers, io.NewSectionReader(i.image.src, int64(i.idataOff), int64(idataSize)))
 		return io.MultiReader(readers...), nil
 
 	default:
@@ -909,8 +899,8 @@ func (i *Inode) Readlink() (string, error) {
 	} else {
 		// This matches Linux's behaviour in fs/namei.c:page_get_link() and
 		// include/linux/namei.h:nd_terminate_link().
-		if size > PageSize-1 {
-			size = PageSize - 1
+		if size > uint64(i.image.BlockSize())-1 {
+			size = uint64(i.image.BlockSize()) - 1
 		}
 	}
 	target, err := i.image.BytesAt(off, size)

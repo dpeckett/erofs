@@ -32,7 +32,7 @@ func TestEROFS(t *testing.T) {
 	image, err := erofs.OpenImage(f)
 	require.NoError(t, err)
 
-	require.Equal(t, 221, int(image.Blocks()))
+	require.Equal(t, 216, int(image.Blocks()))
 
 	fsys, err := erofs.NewFilesystem(image)
 	require.NoError(t, err)
@@ -128,7 +128,7 @@ func TestEROFS(t *testing.T) {
 			ino, ok := info.Sys().(*erofs.Inode)
 			require.True(t, ok)
 
-			require.Equal(t, uint64(0x3fe), ino.Nid())
+			require.Equal(t, uint64(0x327), ino.Nid())
 			require.Zero(t, ino.UID())
 			require.Zero(t, ino.GID())
 		})
@@ -144,7 +144,7 @@ func TestEROFS(t *testing.T) {
 			ino, ok := info.Sys().(*erofs.Inode)
 			require.True(t, ok)
 
-			require.Equal(t, uint64(0x67), ino.Nid())
+			require.Equal(t, uint64(0x9c), ino.Nid())
 			require.Zero(t, ino.UID())
 			require.Zero(t, ino.GID())
 		})
@@ -160,7 +160,7 @@ func TestEROFS(t *testing.T) {
 			ino, ok := info.Sys().(*erofs.Inode)
 			require.True(t, ok)
 
-			require.Equal(t, uint64(0x3fe), ino.Nid())
+			require.Equal(t, uint64(0x327), ino.Nid())
 			require.Zero(t, ino.UID())
 			require.Zero(t, ino.GID())
 		})

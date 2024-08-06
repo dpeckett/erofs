@@ -5,5 +5,5 @@ skopeo copy docker-daemon:docker.io/tianon/toybox:0.8.11 oci-archive:toybox.tar:
 mkdir -p oci
 tar -C oci -xf toybox.tar
 sudo umoci unpack --image oci:docker.io/tianon/toybox:0.8.11 unpacked
-sudo mkfs.erofs -E noinline_data toybox.img unpacked/rootfs/
+sudo mkfs.erofs toybox.img unpacked/rootfs/
 ```
